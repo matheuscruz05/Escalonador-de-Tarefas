@@ -1,0 +1,22 @@
+# Ignorar diretórios que começam com 'out'
+out*/
+
+# Ignorar a pasta 'data'
+data/
+
+docs/
+
+# Ignorar arquivos .txt
+*.txt
+
+# Ignorar arquivos .svg
+*.svg
+
+# Ignorar arquivos .json
+*.json
+
+# Ignorar arquivos .csv
+*.csv
+
+# Ignorar diretórios do VSCode
+.vscode/
