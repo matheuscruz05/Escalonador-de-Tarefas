@@ -8,11 +8,135 @@ from .scheduler.io.config_parser import parse_config_text
 from .scheduler.viz.ascii import gantt_ascii
 from .scheduler.viz.svg import gantt_svg
 
+from threading import Thread, Event
+from tkinter import Canvas  
+from PIL import Image, ImageTk
+import cairosvg
+import subprocess  
+import threading   
+import multiprocessing as mp
+import os, time
+import tkinter as tk
+
+
 ALGOS = {
     "FIFO": FIFO,
     "SRTF": SRTF,
     "PRIOP": PRIOP,
 }
+
+# ------------------ StepGate: leitura de Enter sem bloquear a CLI ------------------
+
+class StepGate:
+    """
+    Lê Enter em um thread daemon e libera o passo via Event.
+    Chame gate.wait(prompt) ao final de cada tick.
+    """
+    def __init__(self):
+        self._evt = Event()
+        self._alive = True
+        self._t = Thread(target=self._reader, daemon=True)
+        self._t.start()
+
+    def _reader(self):
+        while self._alive:
+            try:
+                line = sys.stdin.readline()
+                # EOF? libera uma vez para não travar
+                if line == "":
+                    self._evt.set()
+                    break
+                self._evt.set()
+            except Exception:
+                self._evt.set()
+                break
+
+    def wait(self, prompt: str):
+        # só imprime o prompt se realmente vamos bloquear
+        if not self._evt.is_set():
+            print(prompt, end="", flush=True)
+            self._evt.wait()
+        # rearmar para o próximo tick
+        self._evt.clear()
+
+    def close(self):
+        self._alive = False
+
+
+# ------------------ Viewer de PNG “live” em processo separado ------------------
+
+def _viewer_main(png_path: str, title: str, refresh_ms: int = 120):
+    """
+    Processo filho: abre uma janela Tk e atualiza a imagem quando o arquivo PNG
+    muda de mtime. Mantém referência da imagem para evitar GC do Tkinter.
+    """
+    import tkinter as _tk
+    from PIL import Image as _Image, ImageTk as _ImageTk
+
+    root = _tk.Tk()
+    root.title(title)
+    try:
+        root.attributes("-type", "splash")  # pode não ser suportado em todos os WMs
+    except Exception:
+        pass
+
+    label = _tk.Label(root, bd=0, highlightthickness=0)
+    label.pack()
+
+    state = {"photo": None, "mt": None, "w": 800, "h": 500}
+
+    def _try_load():
+        try:
+            mt = os.path.getmtime(png_path)
+        except OSError:
+            root.after(refresh_ms, _try_load)
+            return
+
+        if state["mt"] != mt:
+            try:
+                im = _Image.open(png_path)
+                im.load()  # garante leitura completa
+                photo = _ImageTk.PhotoImage(im)
+                label.configure(image=photo)
+                state["photo"] = photo
+                state["mt"] = mt
+
+                w, h = im.width, im.height
+                if (w, h) != (state["w"], state["h"]):
+                    state["w"], state["h"] = w, h
+                    # não use geometry: deixa o Tk ajustar client area (evita corte no topo)
+                    root.update_idletasks()
+                    root.minsize(w, h)
+            except Exception:
+                pass
+
+        root.after(refresh_ms, _try_load)
+
+    root.after(0, _try_load)
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        pass
+
+
+def spawn_viewer(png_path: str, title: str = "Gráfico Gantt - Live", refresh_ms: int = 120) -> mp.Process:
+    """Sobe o viewer em outro processo (daemon)."""
+    proc = mp.Process(target=_viewer_main, args=(png_path, title, refresh_ms), daemon=True)
+    proc.start()
+    return proc
+
+
+def stop_viewer(proc: mp.Process | None) -> None:
+    """Encerra o viewer com segurança (se ainda estiver vivo)."""
+    if proc is not None and proc.is_alive():
+        proc.terminate()
+        try:
+            proc.join(timeout=1.5)
+        except Exception:
+            pass
+
+
+# ------------------ utilitários do simulador ------------------
 
 def load_config(path: pathlib.Path):
     text = path.read_text(encoding="utf-8")
@@ -78,12 +202,21 @@ def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tie
     engine = SimulationEngine(build_tcbs(cfg), scheduler=scheduler, quantum=cfg.quantum, tiebreaker=tiebreaker)
     engine.run_full()
     outdir.mkdir(parents=True, exist_ok=True)
-    # NEW: pass events, optional svg_scale default=20
     svg = gantt_svg(engine.finished, events=engine.events, svg_scale=20)
+    # Exibe o gráfico gerado após a simulação
+    final_svg = outdir / "gantt.svg"
+    if final_svg.exists():
+        final_png = outdir / "gantt_final.png"
+        cairosvg.svg2png(
+            url=str(final_svg),
+            write_to=str(final_png),
+            output_width=1600,
+            output_height=800,
+        )
+        _ = spawn_viewer(str(final_png), title="Gráfico Gantt - Resultado Final")
     (outdir / "gantt.svg").write_text(svg, encoding="utf-8")
     summary = engine.summary()
     write_summary(outdir, summary)
-    # NEW: write events.csv
     import csv as _csv
     with (outdir / "events.csv").open("w", newline="", encoding="utf-8") as f:
         w = _csv.writer(f)
@@ -92,7 +225,17 @@ def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tie
             w.writerow([t, kind, pid, extra])
     return {"algo": algo_name, "summary_csv": str(outdir / "summary.csv")}
 
+
+# ------------------ CLI ------------------
+
 def main(argv=None):
+    # Evita herdar descritores/estado quando abrimos a janela (mais estável que 'fork')
+    try:
+        if mp.get_start_method(allow_none=True) != "spawn":
+            mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
     p = argparse.ArgumentParser(prog="scheduler-sim")
     sub = p.add_subparsers(dest="cmd")
 
@@ -105,8 +248,6 @@ def main(argv=None):
     )
     runp.add_argument("--mode", choices=["step","full"], default="full")
     runp.add_argument("--outdir", default=".")
-    # permite escolher o algoritmo diretamente no run
-    # runp.add_argument("--algo", choices=["FIFO","SRTF","PRIOP"], help="Override do algoritmo do arquivo de configuração.")
     runp.add_argument("--tiebreaker", default="arrival,pid")
     runp.add_argument("--aging-step", type=int, default=0, help="Aging step (ticks por incremento de prioridade, PRIOP).")
     runp.add_argument("--report-latex", action="store_true", help="Atualiza docs/latex/secoes/07-resultados.tex desta execução.")
@@ -131,36 +272,29 @@ def main(argv=None):
             cfg = load_config(cfg_path)
             algo_name = (args.algo or cfg.algorithm).upper()
             sched = prepare_scheduler(algo_name, getattr(args, "aging_step", 0), tiebreaker)
-            #engine = SimulationEngine(build_tcbs(cfg), scheduler=sched, quantum=cfg.quantum, tiebreaker=tiebreaker)
-            # tcbs = build_tcbs(cfg)
-            # engine = SimulationEngine(tcbs, scheduler=sched, quantum=cfg.quantum, tiebreaker=tiebreaker)
             tcbs = build_tcbs(cfg)
             engine = SimulationEngine(tcbs, scheduler=sched, quantum=cfg.quantum, tiebreaker=tiebreaker)
+
             # horizonte total para o eixo ASCII (máximo arrival+duration)
             horizon = max((t.arrival + t.duration) for t in tcbs) if tcbs else 0
+
             base_out.mkdir(parents=True, exist_ok=True)
             svg_step_dir = base_out / "out_step_svg"
             svg_step_dir.mkdir(parents=True, exist_ok=True)
+
+            # arquivo PNG “ao vivo” que o viewer lerá e atualizará
+            live_png = svg_step_dir / "live.png"
+            viewer_proc = None
+
+            gate = StepGate()
             print("== STEP MODE: Enter para avançar 1 tick; Ctrl+C para sair ==")
             trace = []
+
             while engine.tasks_all or engine.ready or engine.running is not None:
-                try:
-                    input(f"[t={engine.clock}] Continue? ")
-                except KeyboardInterrupt:
-                    break
-                # state = {
-                #     "t": engine.clock,
-                #     "running": (engine.running.pid if engine.running else None),
-                #     "ready": [t.pid for t in sorted(engine.ready, key=lambda x: (x.arrival, x.pid))],
-                #     "finished": [t.pid for t in sorted(engine.finished, key=lambda x: x.pid)],
-                # }
-                # trace.append(state)
-                # engine.step()
-                # print("STATE:", state)
-                # print(gantt_ascii(engine.finished + engine.ready + ([engine.running] if engine.running else [])))
-                # Avança a simulação ANTES de capturar/imprimir o estado,
-                # assim 't' refletirá o tick já executado (alinhado ao Gantt).
+                # 1) AVANÇA A SIMULAÇÃO
                 engine.step()
+
+                # 2) ESTADO E DEBUG
                 state = {
                     "t": engine.clock,
                     "running": (engine.running.pid if engine.running else None),
@@ -168,14 +302,13 @@ def main(argv=None):
                     "finished": [t.pid for t in sorted(engine.finished, key=lambda x: x.pid)],
                 }
                 trace.append(state)
-                # print(f"STATE@t={engine.clock}:", state)
-                # print(gantt_ascii(engine.finished + engine.ready + ([engine.running] if engine.running else []), current_t=engine.clock))
-                print(f"STATE@t={engine.clock}:", state)
-                # snapshot visual: finished + ready + (running se houver),
-                # com eixo até 'horizon' e bloco parcial do running
+                print(f"STATE@t={engine.clock}: {state}", flush=True)
+
+                # ASCII de depuração claro (com quebra)
                 snapshot_tasks = engine.finished + engine.ready + ([engine.running] if engine.running else [])
-                print(gantt_ascii(snapshot_tasks, current_t=engine.clock, horizon=horizon, running=engine.running))
-                # snapshot SVG por tick (vivo): inclui bloco parcial do running e horizonte total
+                print(gantt_ascii(snapshot_tasks, current_t=engine.clock, horizon=horizon, running=engine.running), flush=True)
+
+                # 3) GERA SVG e PNG “live”
                 svg = gantt_svg(
                     snapshot_tasks,
                     events=engine.events,
@@ -184,14 +317,36 @@ def main(argv=None):
                     horizon=horizon,
                     running=engine.running,
                 )
-                #(base_out / "gantt_step.svg")
-                (svg_step_dir / f"gantt_t{engine.clock:04d}.svg").write_text(svg, encoding="utf-8")
+                svg_path = svg_step_dir / f"gantt_t{engine.clock:04d}.svg"
+                svg_path.write_text(svg, encoding="utf-8")
+
+                cairosvg.svg2png(
+                    url=str(svg_path),
+                    write_to=str(live_png),
+                    output_width=1400,
+                    output_height=650,
+                )
+
+                # 4) Sobe o viewer no primeiro tick
+                if viewer_proc is None:
+                    viewer_proc = spawn_viewer(str(live_png), title="Gráfico Gantt - Live")
+
+                print(f"[info] SVG do tick {engine.clock} salvo em: {svg_path}", flush=True)
+
+                # 5) ESPERA ENTER (após renderização)
+                try:
+                    gate.wait(f"[t={engine.clock}] Continue? ")
+                except KeyboardInterrupt:
+                    break
+
+            print("== Simulação finalizada ==", flush=True)
+
             (base_out / "trace.json").write_text(json.dumps(trace, indent=2), encoding="utf-8")
-            # gerar artefatos finais também no STEP
             svg = gantt_svg(engine.finished, events=engine.events, svg_scale=20)
             (base_out / "gantt.svg").write_text(svg, encoding="utf-8")
             summary = engine.summary()
             write_summary(base_out, summary)
+
             import csv as _csv
             with (base_out / "events.csv").open("w", newline="", encoding="utf-8") as f:
                 w = _csv.writer(f)
@@ -199,24 +354,44 @@ def main(argv=None):
                 for (t, kind, pid, extra) in engine.events:
                     w.writerow([t, kind, pid, extra])
 
+            if viewer_proc is not None:
+                stop_viewer(viewer_proc)
+            gate.close()
+
             return 0
+
         else:
-            #meta = run_single(cfg_path, base_out, load_config(cfg_path).algorithm.upper(), tiebreaker, getattr(args, "aging_step", 0))
-            # FULL: honra --algo quando presente; caso contrário, usa o cabeçalho do arquivo
             cfg_tmp = load_config(cfg_path)
             algo_name = (args.algo or cfg_tmp.algorithm).upper()
             meta = run_single(cfg_path, base_out, algo_name, tiebreaker, getattr(args, "aging_step", 0))
+
             cfg = load_config(cfg_path)
             cfg_algo = cfg.algorithm.upper()
             chosen_algo = args.algo.upper() if getattr(args, "algo", None) else cfg_algo
             if getattr(args, "algo", None) and chosen_algo != cfg_algo:
                 print(f"[info] --algo={chosen_algo} sobrescreve o algoritmo do arquivo ({cfg_algo}).")
+
             meta = run_single(cfg_path, base_out, chosen_algo, tiebreaker, getattr(args, "aging_step", 0))
+
             if getattr(args, "report-latex", False):
                 project_root = pathlib.Path(__file__).resolve().parents[1]
                 write_results_tex(project_root, [meta])
+
             summary = json.loads((base_out / "summary.json").read_text(encoding="utf-8"))
             from pprint import pprint; pprint(summary)
+
+            # Mostrar Gantt final (opcional)
+            final_svg = base_out / "gantt.svg"
+            if final_svg.exists():
+                final_png = base_out / "gantt_final.png"
+                cairosvg.svg2png(
+                    url=str(final_svg),
+                    write_to=str(final_png),
+                    output_width=1600,
+                    output_height=800,
+                )
+                _ = spawn_viewer(str(final_png), title="Gráfico Gantt - Resultado Final")
+
             return 0
 
     if args.cmd == "compare":
@@ -232,6 +407,7 @@ def main(argv=None):
 
     print("Unknown command")
     return 2
+
 
 if __name__ == "__main__":
     sys.exit(main())
