@@ -20,3 +20,6 @@ docs/
 
 # Ignorar diretórios do VSCode
 .vscode/
+
+# Ignorar arquivos de cache do Python
+__pycache__/
