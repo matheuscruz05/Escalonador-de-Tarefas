@@ -87,9 +87,13 @@ def gantt_ascii(
         row = [f"    {t.pid:<{label_w}} | "]
         line = [" "] * (max_t + 1)
         for a, b in t.segments:
-            for k in range(a, b):
-                if 0 <= k <= max_t:
-                    line[k] = "█"
+            # Apenas desenhar segmentos que existiram até o current_t (se fornecido)
+            if current_t is not None and b > current_t:
+                b = current_t  # Truncar segmento no current_t
+            if a < b:  # Apenas desenhar se houver algo para desenhar
+                for k in range(a, b):
+                    if 0 <= k <= max_t:
+                        line[k] = "█"
         # desenha o trecho em execução (parcial) se houver
         if running is not None and t is running:
             if getattr(t, "last_started_at", None) is not None and current_t is not None:

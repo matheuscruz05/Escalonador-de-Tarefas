@@ -113,8 +113,14 @@ def gantt_svg(
         y = y_row(idx)
         parts.append(f'<text x="{margin - 8}" y="{y + row_height*0.65:.1f}" font-size="12" text-anchor="end">{t.pid}</text>')
         for a, b in t.segments:
+            # Se current_t fornecido, desenhar apenas até current_t
+            end = b
+            if current_t is not None and b > current_t:
+                end = current_t
+            if a >= end:
+                continue
             x = x_of(a)
-            w = max(1, (b - a) * svg_scale)
+            w = max(1, (end - a) * svg_scale)
             parts.append(
                 f'<rect x="{x}" y="{y}" width="{w}" height="{row_height - 6}" '
                 f'rx="4" ry="4" fill="{t.color}" opacity="0.9" stroke="{COLOR_BAR_BORDER}" stroke-width="0.6"/>'
@@ -134,6 +140,9 @@ def gantt_svg(
     if events:
         top_y = margin + 6
         for (tick, kind, pid, extra) in events:
+            # Filtrar eventos que estão no futuro em relação ao current_t
+            if current_t is not None and tick > current_t:
+                continue
             x = x_of(tick)
             if kind == "ARRIVAL":
                 parts.append(f'<polygon points="{x-6},{top_y} {x+6},{top_y} {x},{top_y+10}" fill="{COLOR_ARRIVAL}" opacity="0.95"/>')

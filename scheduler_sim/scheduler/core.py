@@ -1,7 +1,7 @@
-
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple, Protocol
+import copy
 
 @dataclass
 class TCB:
@@ -116,6 +116,8 @@ class SimulationEngine:
                 self._fifo_seq += 1
                 self.ready.append(self.running)
             self._dispatch(chosen)
+        if self.running is not None and chosen is not self.running:
+            self._emit("PREEMPT", self.running.pid)
 
     def _tick_running(self):
         if self.running is None:
@@ -142,6 +144,8 @@ class SimulationEngine:
                     t.aging_wait += 1    # para aging efetivo
 
     def step(self) -> None:
+        if not self.tasks_all and not self.ready and self.running is None:
+            return  # Simulação terminou, não faz nada
         self._admit_new_arrivals()
         self._preempt_if_needed()
         self._tick_running()
@@ -170,3 +174,56 @@ class SimulationEngine:
                 "preemptions": t.preemptions,
             }
         return out
+    
+    def snapshot(self) -> dict:
+        """
+        Retorna uma cópia do estado atual do engine.
+        """
+        # Coletar todos os TCBs únicos do sistema
+        tcb_dict = {}
+
+        # Coletar todos os TCBs únicos usando PID como chave
+        for t in self.tasks_all:
+            tcb_dict[t.pid] = t
+        for t in self.ready:
+            tcb_dict[t.pid] = t
+        for t in self.finished:
+            tcb_dict[t.pid] = t
+        if self.running is not None:
+            tcb_dict[self.running.pid] = self.running
+        
+        # Criar cópias de cada TCB
+        tcb_copies = {}
+        for pid, tcb in tcb_dict.items():
+            tcb_copies[pid] = copy.deepcopy(tcb)
+        
+        # Mapear listas para PIDs
+        return {
+            'clock': self.clock,
+            'tasks_all_pids': [t.pid for t in self.tasks_all],
+            'ready_pids': [t.pid for t in self.ready],
+            'finished_pids': [t.pid for t in self.finished],
+            'running_pid': self.running.pid if self.running else None,
+            'time_in_quantum': self.time_in_quantum,
+            'events': copy.deepcopy(self.events),
+            '_fifo_seq': self._fifo_seq,
+            'tcb_copies': tcb_copies,
+        }
+    
+    def restore(self, snapshot: dict) -> None:
+        """
+        Restaura o estado do engine a partir de um snapshot.
+        """
+        tcb_copies = snapshot['tcb_copies']
+        
+        # Reconstruir listas a partir dos PIDs
+        self.tasks_all = [tcb_copies[pid] for pid in snapshot['tasks_all_pids']]
+        self.ready = [tcb_copies[pid] for pid in snapshot['ready_pids']]
+        self.finished = [tcb_copies[pid] for pid in snapshot['finished_pids']]
+        self.running = tcb_copies.get(snapshot['running_pid']) if snapshot['running_pid'] else None
+        
+        # Restaurar atributos simples
+        self.clock = snapshot['clock']
+        self.time_in_quantum = snapshot['time_in_quantum']
+        self.events = snapshot['events']
+        self._fifo_seq = snapshot['_fifo_seq']

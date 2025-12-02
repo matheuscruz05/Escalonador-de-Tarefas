@@ -7,8 +7,6 @@ from scheduler.algorithms.priop import PRIOP
 from scheduler.io.config_parser import parse_config_text
 from scheduler.viz.ascii import gantt_ascii
 from scheduler.viz.svg import gantt_svg
-
-from threading import Thread, Event
 import cairosvg
 import multiprocessing as mp
 import os
@@ -19,43 +17,49 @@ ALGOS = {
     "PRIOP": PRIOP,
 }
 
-# ------------------ StepGate: leitura de Enter sem bloquear a CLI ------------------
+# ------------------ HistoryManager para avançar/retroceder a simulação ------------------
 
-class StepGate:
-    """
-    Lê Enter em um thread daemon e libera o passo via Event.
-    Chame gate.wait(prompt) ao final de cada tick.
-    """
-    def __init__(self):
-        self._evt = Event()
-        self._alive = True
-        self._t = Thread(target=self._reader, daemon=True)
-        self._t.start()
-
-    def _reader(self):
-        while self._alive:
-            try:
-                line = sys.stdin.readline()
-                # EOF? libera uma vez para não travar
-                if line == "":
-                    self._evt.set()
-                    break
-                self._evt.set()
-            except Exception:
-                self._evt.set()
-                break
-
-    def wait(self, prompt: str):
-        # só imprime o prompt se realmente vamos bloquear
-        if not self._evt.is_set():
-            print(prompt, end="", flush=True)
-            self._evt.wait()
-        # rearmar para o próximo tick
-        self._evt.clear()
-
-    def close(self):
-        self._alive = False
-
+class HistoryManager:
+    """Gerencia histórico de snapshots para avançar/retroceder."""
+    
+    def __init__(self, engine: SimulationEngine):
+        self.engine = engine
+        self.history: List[dict] = [engine.snapshot()]  # Estado inicial
+        self.current_idx = 0
+    
+    def forward(self) -> bool:
+        """Avança um passo, se possível."""
+        # Verificar se já está no final do histórico
+        if self.current_idx < len(self.history) - 1:
+            # Já existe estado futuro: restaurar
+            self.current_idx += 1
+            self.engine.restore(self.history[self.current_idx])
+            return True
+        
+        # Verificar se simulação terminou
+        if (not self.engine.tasks_all and 
+            not self.engine.ready and 
+            self.engine.running is None):
+            return False  # Não há para onde avançar
+        
+        # Avançar normalmente
+        self.engine.step()
+        
+        # Salvar novo snapshot (descartando estados futuros se existirem)
+        if self.current_idx < len(self.history) - 1:
+            self.history = self.history[:self.current_idx + 1]
+        
+        self.history.append(self.engine.snapshot())
+        self.current_idx = len(self.history) - 1
+        return True
+    
+    def backward(self) -> bool:
+        """Retrocede um passo, se possível."""
+        if self.current_idx > 0:
+            self.current_idx -= 1
+            self.engine.restore(self.history[self.current_idx])
+            return True
+        return False
 
 # ------------------ Viewer de PNG “live” em processo separado ------------------
 
@@ -280,29 +284,34 @@ def main(argv=None):
             live_png = svg_step_dir / "live.png"
             viewer_proc = None
 
-            gate = StepGate()
-            print("== STEP MODE: Enter para avançar 1 tick; Ctrl+C para sair ==")
-            trace = []
+            history_mgr = HistoryManager(engine)
+            print("== STEP MODE COM HISTÓRICO ==")
+            print("Comandos disponíveis:")
+            print("  [n]ext (ou Enter): Avança um passo")
+            print("  [p]rev: Retrocede um passo")
+            print("  [g]oto <n>: Vai para o passo específico")
+            print("  [l]ist: Mostra resumo do histórico")
+            print("  [s]tatus: Mostra status atual")
+            print("  [q]uit: Sai da simulação")
+            print("=" * 50)
 
-            while engine.tasks_all or engine.ready or engine.running is not None:
-                # 1) AVANÇA A SIMULAÇÃO
-                engine.step()
-
-                # 2) ESTADO E DEBUG
+            while True:
+                # 1) Exibir estado atual
+                info = history_mgr.get_current_info()
+                print(f"\n=== Passo {info['current_step']}/{info['total_steps']} @ t={info['clock']} ===")
+                
                 state = {
-                    "t": engine.clock,
                     "running": (engine.running.pid if engine.running else None),
                     "ready": [t.pid for t in sorted(engine.ready, key=lambda x: (x.arrival, x.pid))],
                     "finished": [t.pid for t in sorted(engine.finished, key=lambda x: x.pid)],
                 }
-                trace.append(state)
-                print(f"STATE@t={engine.clock}: {state}", flush=True)
+                print(f"Estado: {state}")
 
-                # ASCII de depuração claro (com quebra)
+                # 2) Exibir Gantt ASCII
                 snapshot_tasks = engine.finished + engine.ready + ([engine.running] if engine.running else [])
-                print(gantt_ascii(snapshot_tasks, current_t=engine.clock, horizon=horizon, running=engine.running), flush=True)
+                print(gantt_ascii(snapshot_tasks, current_t=engine.clock, horizon=horizon, running=engine.running))
 
-                # 3) GERA SVG e PNG “live”
+                # 3) Gerar SVG e PNG "live"
                 svg = gantt_svg(
                     snapshot_tasks,
                     events=engine.events,
@@ -321,26 +330,57 @@ def main(argv=None):
                     output_height=650,
                 )
 
-                # 4) Sobe o viewer no primeiro tick
+                # 4) Iniciar viewer no primeiro passo
                 if viewer_proc is None:
                     viewer_proc = spawn_viewer(str(live_png), title="Gráfico Gantt - Live")
+                    print("[info] Viewer iniciado. Atualizando gráfico...")
 
-                print(f"[info] SVG do tick {engine.clock} salvo em: {svg_path}", flush=True)
-
-                # 5) ESPERA ENTER (após renderização)
+                # 5) Aguardar comando do usuário
                 try:
-                    gate.wait(f"[t={engine.clock}] Continue? ")
+                    cmd = input(f"\nPasso {history_mgr.current_idx}/{len(history_mgr.history)-1} @ t={engine.clock} (n/p/q): ").strip().lower()
                 except KeyboardInterrupt:
+                    print("\nInterrompido pelo usuário.")
                     break
+                
+                if cmd == '' or cmd == 'n':
+                    # Avançar
+                    if not history_mgr.forward():
+                        print("Simulação finalizada. Não há mais passos para avançar.")
+                elif cmd == 'p':
+                    # Retroceder
+                    if not history_mgr.backward():
+                        print("Já no início do histórico.")
+                elif cmd == 'q':
+                    # Sair
+                    print("Saindo do modo passo a passo...")
+                    break
+                else:
+                    print("Comando inválido. Use: n (next), p (prev), q (quit)")
 
-            print("== Simulação finalizada ==", flush=True)
+                print("\n== Simulação finalizada ==", flush=True)
 
-            (base_out / "trace.json").write_text(json.dumps(trace, indent=2), encoding="utf-8")
+            # Salvar informações em JSON
+            trace_summary = []
+            for idx, snapshot in enumerate(history_mgr.history):
+                trace_summary.append({
+                    "step": idx,
+                    "clock": snapshot.get('clock', 0),
+                    "running_pid": snapshot.get('running_pid'),
+                    "ready_pids": snapshot.get('ready_pids', []),
+                    "finished_pids": snapshot.get('finished_pids', [])
+                })
+
+            (base_out / "trace_summary.json").write_text(json.dumps(trace_summary, indent=2), encoding="utf-8")
+            
+            # Gerar SVG final
             svg = gantt_svg(engine.finished, events=engine.events, svg_scale=20)
             (base_out / "gantt.svg").write_text(svg, encoding="utf-8")
+            
+            # Salvar resumo
             summary = engine.summary()
             write_summary(base_out, summary)
-
+            
+            # Salvar eventos
             import csv as _csv
             with (base_out / "events.csv").open("w", newline="", encoding="utf-8") as f:
                 w = _csv.writer(f)
@@ -348,9 +388,9 @@ def main(argv=None):
                 for (t, kind, pid, extra) in engine.events:
                     w.writerow([t, kind, pid, extra])
 
+            # Fechar viewer
             if viewer_proc is not None:
                 stop_viewer(viewer_proc)
-            gate.close()
 
             return 0
 
