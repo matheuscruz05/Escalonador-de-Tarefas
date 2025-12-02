@@ -10,7 +10,7 @@ Line 2+: id;cor;ingresso;duracao;prioridade;lista_eventos
 - Validations: ingresso >= 0, duracao > 0.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List
 
 @dataclass
 class TaskConfig:

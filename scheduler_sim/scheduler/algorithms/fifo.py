@@ -1,5 +1,5 @@
 from typing import List, Optional
-from ..core import TCB, Scheduler, _tie_key 
+from ..core import TCB, Scheduler
 
 class FIFO(Scheduler):
     """First-Come, First-Served (cooperativo).

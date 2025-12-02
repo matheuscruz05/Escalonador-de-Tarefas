@@ -1,23 +1,17 @@
 import argparse, sys, pathlib, json, csv
 from typing import List
-from .scheduler.core import TCB, SimulationEngine
-from .scheduler.algorithms.fifo import FIFO
-from .scheduler.algorithms.srtf import SRTF
-from .scheduler.algorithms.priop import PRIOP
-from .scheduler.io.config_parser import parse_config_text
-from .scheduler.viz.ascii import gantt_ascii
-from .scheduler.viz.svg import gantt_svg
+from scheduler.core import TCB, SimulationEngine
+from scheduler.algorithms.fifo import FIFO
+from scheduler.algorithms.srtf import SRTF
+from scheduler.algorithms.priop import PRIOP
+from scheduler.io.config_parser import parse_config_text
+from scheduler.viz.ascii import gantt_ascii
+from scheduler.viz.svg import gantt_svg
 
 from threading import Thread, Event
-from tkinter import Canvas  
-from PIL import Image, ImageTk
 import cairosvg
-import subprocess  
-import threading   
 import multiprocessing as mp
-import os, time
-import tkinter as tk
-
+import os
 
 ALGOS = {
     "FIFO": FIFO,

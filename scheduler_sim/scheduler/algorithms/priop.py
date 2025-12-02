@@ -1,5 +1,5 @@
 from typing import List, Optional
-from ..core import TCB, Scheduler, _tie_key
+from ..core import TCB, Scheduler
 
 class PRIOP(Scheduler):
     """Preemptive Priority. Higher numeric value => higher priority (positive scale).
