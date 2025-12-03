@@ -5,6 +5,26 @@ import copy
 
 @dataclass
 class TCB:
+    """
+    Task Control Block - representa uma tarefa no sistema.
+
+    Args:
+        pid: Identificador único da tarefa
+        color: Cor para visualização (formato hex)
+        arrival: Instante de chegada no sistema
+        duration: Duração total da tarefa em ticks
+        priority: Prioridade inicial (default: 1)
+        events: String de eventos (mantida por compatibilidade)
+    
+    Campos de runtime (não passados no construtor):
+        remaining: Tempo restante para conclusão
+        segments: Histórico de execução [início, fim)
+        start_time: Instante do primeiro despacho
+        finish_time: Instante de conclusão
+        waiting_accum: Acumulado de espera
+        aging_wait: Espera desde último enfileiramento (para aging)
+        preemptions: Contador de preempções
+    """
     pid: str
     color: str
     arrival: int
@@ -17,14 +37,13 @@ class TCB:
     finish_time: Optional[int] = None
     response_time: Optional[int] = None
     waiting_accum: int = 0
-    aging_wait: int = 0               # espera desde o último enfileiramento
+    aging_wait: int = 0 # espera desde o último enfileiramento
     last_started_at: Optional[int] = None
     preemptions: int = 0
     segments: List[Tuple[int, int]] = field(default_factory=list)
 
     def __post_init__(self):
         self.remaining = self.duration
-        # NOVO: FCFS estável — guarda o arrival original e a sequência de enfileiramento
         self.arrival_original: int = self.arrival
         self.enqueue_seq: int = -1
 
@@ -33,6 +52,7 @@ class Scheduler(Protocol):
         ...
 
 def _tie_key(t: "TCB", order: list[str]):
+    """Constrói chave de ordenação para desempate conforme ordem especificada."""
     key = []
     for f in order:
         if f == "arrival":
@@ -47,9 +67,19 @@ def _tie_key(t: "TCB", order: list[str]):
 
 class SimulationEngine:
     """
-    Single CPU, tick-based preemptive simulator.
-    Deterministic tiebreakers used inside algorithms (default arrival,pid).
-    The engine stores 'tiebreaker' for future use and reporting.
+    Simulador preemptivo baseado em ticks para CPU única.
+    
+    Características:
+    - Preemptivo com quantum configurável
+    - Suporta múltiplos algoritmos de escalonamento
+    - Tiebreakers determinísticos para desempates
+    - Registro completo de eventos para visualização
+    
+    Args:
+        tasks: Lista de TCBs a serem executados
+        scheduler: Instância do algoritmo de escalonamento
+        quantum: Tamanho do quantum para preempção (default: 2)
+        tiebreaker: Ordem dos critérios para desempate
     """
     def __init__(self, tasks: List[TCB], scheduler: Scheduler, quantum: int = 2, tiebreaker: list[str] | None = None):
         self.clock = 0
@@ -61,27 +91,21 @@ class SimulationEngine:
         self.quantum = quantum
         self.time_in_quantum = 0
         self.tiebreaker = tiebreaker or ['arrival','pid']
-        # --- NEW: event log [(t, kind, pid, extra_dict)]
         self.events: List[Tuple[int, str, str, Dict]] = []
-        # NOVO: contador global de enfileiramento para FCFS estável
         self._fifo_seq: int = 0
 
-    # --- NEW: helper to append an event at current clock
+    # Helper para emitir eventos
     def _emit(self, kind: str, pid: Optional[str], **extra):
         self.events.append((self.clock, kind, pid or "", extra))
 
     def _admit_new_arrivals(self):
         for t in list(self.tasks_all):
             if t.arrival == self.clock:
-                #t.aging_wait = 0 
-                #self.ready.append(t)
                 t.aging_wait = 0
-                # FCFS estável: atribui sequência ao entrar na ready
                 t.enqueue_seq = self._fifo_seq
                 self._fifo_seq += 1
                 self.ready.append(t)
                 self.tasks_all.remove(t)
-                # NEW
                 self._emit("ARRIVAL", t.pid)
 
     def _dispatch(self, task: TCB):
@@ -93,10 +117,19 @@ class SimulationEngine:
         if self.running.response_time is None:
             self.running.response_time = self.clock - self.running.arrival
         self.running.last_started_at = self.clock
-        self.running.aging_wait = 0              #começa a rodar, parou de “envelhecer”
+        self.running.aging_wait = 0 #começa a rodar, parou de “envelhecer”
         self.time_in_quantum = 0
 
     def _preempt_if_needed(self):
+        """
+        Verifica se é necessário preemptar a tarefa atual.
+        
+        Consulta o escalonador para escolher a próxima tarefa. Se a tarefa escolhida
+        for diferente da que está em execução, então a tarefa atual é preemptada
+        (movida para a lista de prontos) e a escolhida é despachada.
+        
+        Emite evento PREEMPT para a tarefa preemptada.
+        """
         chosen = self.scheduler.choose(self.ready, self.running, self.clock)
         if chosen is None and self.running is None:
             return
@@ -106,18 +139,15 @@ class SimulationEngine:
             return
         if chosen is not None:
             if self.running is not None and self.running.last_started_at is not None and self.running.last_started_at < self.clock:
+                self._emit("PREEMPT", self.running.pid)
                 self.running.segments.append((self.running.last_started_at, self.clock))
                 self.running.preemptions += 1
-                #self.running.aging_wait = 0      #recomeça a contar aging na ready
-                #self.ready.append(self.running)
-                self.running.aging_wait = 0      # recomeça a contar aging na ready
-                # FCFS estável: nova sequência ao voltar para a ready
+                self.running.aging_wait = 0 # recomeça a contar aging na ready
                 self.running.enqueue_seq = self._fifo_seq
                 self._fifo_seq += 1
                 self.ready.append(self.running)
             self._dispatch(chosen)
-        if self.running is not None and chosen is not self.running:
-            self._emit("PREEMPT", self.running.pid)
+            
 
     def _tick_running(self):
         if self.running is None:
@@ -129,9 +159,6 @@ class SimulationEngine:
                 self.running.segments.append((self.running.last_started_at, self.clock + 1))
             self.running.finish_time = self.clock + 1
             self.finished.append(self.running)
-            # NEW
-            #self._emit("FINISH", self.running.pid)
-            # Corrige FINISH para sair no instante de fim exclusivo (clock+1)
             self.events.append((self.clock + 1, "FINISH", self.running.pid, {}))
             self.running = None
             self.time_in_quantum = 0
@@ -141,7 +168,7 @@ class SimulationEngine:
             if t.arrival <= self.clock:
                 t.waiting_accum += 1
                 if hasattr(t, "aging_wait"):
-                    t.aging_wait += 1    # para aging efetivo
+                    t.aging_wait += 1 # para aging efetivo
 
     def step(self) -> None:
         if not self.tasks_all and not self.ready and self.running is None:
@@ -178,7 +205,19 @@ class SimulationEngine:
     def snapshot(self) -> dict:
         """
         Retorna uma cópia do estado atual do engine.
+
+        Retorna um dicionário contendo:
+        - clock: tempo atual da simulação
+        - tasks_all_pids: PIDs das tarefas não chegadas
+        - ready_pids: PIDs das tarefas prontas
+        - finished_pids: PIDs das tarefas finalizadas
+        - running_pid: PID da tarefa em execução
+        - time_in_quantum: ticks no quantum atual
+        - events: log de eventos
+        - _fifo_seq: contador para enfileiramento FIFO
+        - tcb_copies: cópias profundas de todos os TCBs
         """
+
         # Coletar todos os TCBs únicos do sistema
         tcb_dict = {}
 

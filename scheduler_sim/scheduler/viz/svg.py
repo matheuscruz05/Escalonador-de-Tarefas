@@ -40,6 +40,14 @@ def gantt_svg(
       - faixa superior para marcadores (chegada/preempção/término)
       - legenda em caixa acima, centralizada automaticamente (3 colunas)
       - grade, eixo do tempo e barras com cantos arredondados
+    Args:
+        tasks: List[TCB] - Tarefas a serem plotadas
+        events: List[Tuple] - Eventos para marcação no gráfico
+        svg_scale: int - Pixels por tick (default: 24)
+        row_height: int - Altura de cada linha (default: 24)
+        current_t: Optional[int] - Tick atual (para modo passo)
+        horizon: Optional[int] - Horizonte total para escala
+        running: Optional[TCB] - Tarefa em execução (para segmento parcial)
     """
     svg_scale  = max(6, int(svg_scale))
     row_height = max(18, int(row_height))
@@ -135,7 +143,6 @@ def gantt_svg(
                     f'rx="4" ry="4" fill="{t.color}" opacity="0.55" stroke="{COLOR_BAR_BORDER}" stroke-dasharray="2,2" stroke-width="0.6"/>'
                 )
  
-
     # 4) Marcadores (faixa superior)
     if events:
         top_y = margin + 6
@@ -151,7 +158,7 @@ def gantt_svg(
             elif kind == "FINISH":
                 parts.append(f'<polygon points="{x},{top_y-2} {x+6},{top_y+4} {x},{top_y+10} {x-6},{top_y+4}" fill="{COLOR_FINISH}" opacity="0.95"/>')
 
-                # 5) Legenda — centralizada no SVG inteiro e com clamp às margens
+        # 5) Legenda — centralizada no SVG inteiro e com clamp às margens
         legend_y = max(6, margin - LEGEND_H - LEGEND_MARGIN_TOP)
 
         # Centro alvo: meio do SVG inteiro

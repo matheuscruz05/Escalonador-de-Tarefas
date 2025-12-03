@@ -2,10 +2,17 @@ from typing import List, Optional
 from ..core import TCB, Scheduler
 
 class PRIOP(Scheduler):
-    """Preemptive Priority. Higher numeric value => higher priority (positive scale).
-       //Aging opcional: effective_priority = base + waiting_accum//aging_step (se aging_step>0).
-       Aging opcional: effective_priority = base + floor(aging_wait/aging_step) (se aging_step>0).
-
+    """
+    Priority Preemptive Scheduling com aging opcional.
+        
+    Características:
+    - Prioridade numérica mais alta = maior prioridade
+    - Aging: incrementa prioridade com tempo de espera
+    - Preemptivo: pode interromper tarefas de menor prioridade
+    
+    Args:
+        aging_step: Incremento de prioridade a cada N ticks de espera
+                (0 = aging desabilitado, default)
     """
     def __init__(self, aging_step: int = 0):
         self.tiebreaker_order = ['arrival','pid']
@@ -43,6 +50,7 @@ class PRIOP(Scheduler):
         return tuple(key)
 
     def choose(self, ready: List[TCB], running: Optional[TCB], now: int) -> Optional[TCB]:
+        """Seleciona tarefa com maior prioridade efetiva (com aging se habilitado)."""
         candidates: List[TCB] = list(ready)
         if running is not None:
             candidates.append(running)
@@ -50,10 +58,6 @@ class PRIOP(Scheduler):
             return None
         chosen = sorted(
             candidates,
-            #key=lambda t: (-self._effective_priority(t),) + _tie_key(t, self.tiebreaker_order)
-            # 1) maior prioridade *efetiva* primeiro
-            # 2) depois desempates coerentes: se usuário incluiu 'priority' no tiebreaker,
-            #    ela passa a refletir a prioridade *efetiva* quando aging>0
             key=lambda t: (-self._effective_priority(t),) + self._tie_key_effective(t)
         )[0]
         return chosen

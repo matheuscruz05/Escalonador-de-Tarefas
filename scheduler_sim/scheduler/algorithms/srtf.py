@@ -2,9 +2,15 @@ from typing import List, Optional
 from ..core import TCB, Scheduler, _tie_key
 
 class SRTF(Scheduler):
-    """Shortest Remaining Time First (preemptive)."""
+    """Shortest Remaining Time First (preemptivo).
+    
+    Política: Sempre executa a tarefa com menor tempo restante.
+    Preemptivo: Pode interromper tarefa atual se chegar outra mais curta.
+    
+    Use set_tiebreaker() para configurar critérios de desempate.
+    """
     def __init__(self):
-        self.tiebreaker_order = ['arrival','pid']
+        self.tiebreaker_order = ['arrival','pid'] # Default, configurável via set_tiebreaker()
 
     def set_tiebreaker(self, order):
         self.tiebreaker_order = list(order) if order else ['arrival','pid']

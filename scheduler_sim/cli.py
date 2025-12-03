@@ -60,6 +60,15 @@ class HistoryManager:
             self.engine.restore(self.history[self.current_idx])
             return True
         return False
+    
+    def get_current_info(self):
+        """Retorna informações sobre o passo atual do histórico."""
+        return {
+            "current_step": self.current_idx,
+            "total_steps": len(self.history) - 1,
+            "clock": self.engine.clock,
+            "history_size": len(self.history)
+        }
 
 # ------------------ Viewer de PNG “live” em processo separado ------------------
 
@@ -137,13 +146,16 @@ def stop_viewer(proc: mp.Process | None) -> None:
 # ------------------ utilitários do simulador ------------------
 
 def load_config(path: pathlib.Path):
+    """Carrega e analisa arquivo de configuração."""
     text = path.read_text(encoding="utf-8")
     return parse_config_text(text)
 
 def build_tcbs(cfg) -> List[TCB]:
+    """Converte configuração em lista de TCBs."""
     return [TCB(pid=t.pid, color=t.color, arrival=t.arrival, duration=t.duration, priority=t.priority, events=t.events) for t in cfg.tasks]
 
 def write_summary(outdir: pathlib.Path, summary: dict):
+    """Escreve sumário em JSON e CSV."""
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     rows = [{"pid": pid, **vals} for pid, vals in summary.items()]
     if rows:
@@ -154,6 +166,7 @@ def write_summary(outdir: pathlib.Path, summary: dict):
                 w.writerow(r)
 
 def write_results_tex(project_root: pathlib.Path, runs_meta: list):
+    """Gera relatório LaTeX com resultados comparativos."""
     docs = project_root / "docs" / "latex" / "secoes"
     docs.mkdir(parents=True, exist_ok=True)
     lines = [r"%% AUTO-GERADO -- NÃO EDITAR MANUALMENTE", r"\\chapter{Resultados}"]
@@ -186,6 +199,7 @@ def write_results_tex(project_root: pathlib.Path, runs_meta: list):
     (docs / "07-resultados.tex").write_text("\\n".join(lines), encoding="utf-8")
 
 def prepare_scheduler(name: str, aging_step: int, tiebreaker: list[str]):
+    """Instancia e configura o escalonador apropriado."""
     if name == "PRIOP":
         sched = PRIOP(aging_step=aging_step)
     else:
@@ -195,6 +209,7 @@ def prepare_scheduler(name: str, aging_step: int, tiebreaker: list[str]):
     return sched
 
 def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tiebreaker: list[str], aging_step: int):
+    """Executa uma simulação completa e salva resultados."""
     cfg = load_config(cfg_path)
     scheduler = prepare_scheduler(algo_name, aging_step, tiebreaker)
     engine = SimulationEngine(build_tcbs(cfg), scheduler=scheduler, quantum=cfg.quantum, tiebreaker=tiebreaker)
@@ -227,7 +242,19 @@ def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tie
 # ------------------ CLI ------------------
 
 def main(argv=None):
-    # Evita herdar descritores/estado quando abrimos a janela (mais estável que 'fork')
+    """
+    Ponto de entrada principal da linha de comando.
+    
+    Comandos suportados:
+    - run: Executa simulação única (full ou step-by-step)
+    - compare: Compara múltiplos algoritmos e gera relatório LaTeX
+    
+    Args:
+        argv: Argumentos da linha de comando (sys.argv[1:] se None)
+    
+    Returns:
+        Código de saída (0 = sucesso, >0 = erro)
+    """
     try:
         if mp.get_start_method(allow_none=True) != "spawn":
             mp.set_start_method("spawn", force=True)
@@ -289,9 +316,6 @@ def main(argv=None):
             print("Comandos disponíveis:")
             print("  [n]ext (ou Enter): Avança um passo")
             print("  [p]rev: Retrocede um passo")
-            print("  [g]oto <n>: Vai para o passo específico")
-            print("  [l]ist: Mostra resumo do histórico")
-            print("  [s]tatus: Mostra status atual")
             print("  [q]uit: Sai da simulação")
             print("=" * 50)
 

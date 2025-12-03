@@ -2,35 +2,18 @@
 from typing import List, Optional
 from ..core import TCB
 
-# def gantt_ascii(tasks: List[TCB], width_scale: int = 1) -> str:
-#     """
-#     Render a simple ASCII Gantt per task line.
-#     Each segment is drawn with '█' repeated (end - start) * width_scale.
-#     Idle intervals are left as spaces.
-#     """
-#     # Determine max time
-#     max_t = 0
-#     for t in tasks:
-#         for (a, b) in t.segments:
-#             max_t = max(max_t, b)
-#     lines = []
-#     for t in sorted(tasks, key=lambda x: x.pid):
-#         row = [" "] * (max_t * width_scale)
-#         for (a, b) in t.segments:
-#             for pos in range(a * width_scale, b * width_scale):
-#                 if 0 <= pos < len(row):
-#                     row[pos] = "█"
-#         lines.append(f"{t.pid:>6} | {''.join(row)}")
-#     axis = "       " + "".join(str(i % 10) for i in range(max_t * width_scale))
-#     return axis + "\n" + "\n".join(lines)
-
-#def _time_header_two_rows(max_t: int) -> str:
 def _time_header_two_rows(max_t: int, pad_len: int) -> str:
     """
-    Retorna duas linhas:
-      - linha 1: marca dezenas (0,1,2,...) alinhadas nas colunas múltiplas de 10
-      - linha 2: dígitos das unidades 0..9
-    Cada coluna = 1 tick.
+    Gera cabeçalho de tempo em duas linhas (dezenas e unidades).
+    
+    Args:
+        max_t: Tick máximo a ser representado
+        pad_len: Comprimento do padding para alinhamento
+    
+    Returns:
+        Duas linhas de string formatadas:
+        Linha 1: dígitos das dezenas posicionados a cada 10 ticks
+        Linha 2: dígitos das unidades para cada tick
     """
     # linha de "dezenas": coloca o dígito das dezenas no início de cada bloco de 10
     tens = [" "] * (max_t + 1)
@@ -46,7 +29,6 @@ def _time_header_two_rows(max_t: int, pad_len: int) -> str:
     pad = " " * pad_len  # largura idêntica ao prefixo das linhas (4 + label_w + 3)
     return pad + tens_line + "\n" + pad + ones_line
 
-#def gantt_ascii(tasks: List[TCB], current_t: Optional[int] = None) -> str:
 def gantt_ascii(
     tasks: List[TCB],
     current_t: Optional[int] = None,
@@ -54,10 +36,16 @@ def gantt_ascii(
     running: Optional[TCB] = None,
 ) -> str:
     """
-    Gantt ASCII com cabeçalho de tempo em duas linhas (dezenas/unidades).
-    Se 'current_t' for informado, usa-o como limite (útil no modo STEP).
-    Se 'horizon' for informado, garante a escala total desde o início.
-    Se 'running' for informado, desenha o segmento parcial [last_started_at, current_t).
+    Retorna diagrama Gantt em formato ASCII com cabeçalho de tempo.
+    
+    Args:
+        tasks: Lista de tarefas a serem plotadas
+        current_t: Tick atual (para modo passo, trunca visualização)
+        horizon: Horizonte total (garante escala mínima)
+        running: Tarefa em execução (para mostrar segmento parcial)
+    
+    Returns:
+        String formatada com gráfico ASCII multi-linha
     """
     # 1) descobre tempo máximo a partir dos segmentos
     max_seg = 0
@@ -65,8 +53,6 @@ def gantt_ascii(
         for a, b in t.segments:
             if b is not None:
                 max_seg = max(max_seg, b)
-    # 2) decide extensão do eixo
-    #max_t = max(current_t if current_t is not None else 0, max_seg)
     # 2) decide extensão do eixo (considera horizonte, corrente e segmentos)
     max_t = max(
         horizon if horizon is not None else 0,
@@ -74,7 +60,6 @@ def gantt_ascii(
         max_seg,
     )
     # 3) cabeçalho em duas linhas
-    #out = [_time_header_two_rows(max_t)]
     # largura fixa para os rótulos (PID) e prefixo comum
     label_w = max((len(t.pid) for t in tasks), default=2)
     prefix_len = 4 + label_w + 3   # "    " + f"{pid:<{label_w}}" + " | "
