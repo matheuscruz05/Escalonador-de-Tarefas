@@ -132,21 +132,35 @@ class SimulationEngine:
         Emite evento PREEMPT para a tarefa preemptada.
         """
         chosen = self.scheduler.choose(self.ready, self.running, self.clock)
+
+        # Caso 1: Não há tarefa escolhida nem tarefa em execução
         if chosen is None and self.running is None:
             return
+        
+        # Caso 2: A tarefa escolhida é a mesma que está em execução
         if chosen is self.running:
             return
+        
+        # Caso 3: Não há tarefa escolhida, mas há tarefa em execução
         if chosen is None and self.running is not None:
             return
-        if chosen is not None:
-            if self.running is not None and self.running.last_started_at is not None and self.running.last_started_at < self.clock:
+        
+        # Caso 4: Há tarefa escolhida diferente da que está em execução
+        # Preempção da tarefa atual, se houver
+        if self.running is not None:
+            # Registrar segmento de execução se a tarefa executou algum tempo
+            if self.running.last_started_at is not None and self.running.last_started_at < self.clock:
                 self._emit("PREEMPT", self.running.pid)
                 self.running.segments.append((self.running.last_started_at, self.clock))
                 self.running.preemptions += 1
-                self.running.enqueue_seq = self._fifo_seq
-                self._fifo_seq += 1
-                self.ready.append(self.running)
-            self._dispatch(chosen)
+
+            # Adicionar a tarefa preemptada à fila de prontos
+            self.running.enqueue_seq = self._fifo_seq
+            self._fifo_seq += 1
+            self.ready.append(self.running)
+            
+        # Despachar a nova tarefa escolhida
+        self._dispatch(chosen)
             
 
     def _tick_running(self):
