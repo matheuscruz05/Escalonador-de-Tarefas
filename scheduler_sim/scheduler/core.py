@@ -117,8 +117,9 @@ class SimulationEngine:
         if self.running.response_time is None:
             self.running.response_time = self.clock - self.running.arrival
         self.running.last_started_at = self.clock
-        self.running.aging_wait = 0 #começa a rodar, parou de “envelhecer”
         self.time_in_quantum = 0
+        # RESET do contador de aging quando a tarefa começa a executar
+        self.running.aging_wait = 0 
 
     def _preempt_if_needed(self):
         """
@@ -142,7 +143,6 @@ class SimulationEngine:
                 self._emit("PREEMPT", self.running.pid)
                 self.running.segments.append((self.running.last_started_at, self.clock))
                 self.running.preemptions += 1
-                self.running.aging_wait = 0 # recomeça a contar aging na ready
                 self.running.enqueue_seq = self._fifo_seq
                 self._fifo_seq += 1
                 self.ready.append(self.running)

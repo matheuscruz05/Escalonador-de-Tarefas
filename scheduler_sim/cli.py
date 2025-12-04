@@ -198,25 +198,61 @@ def write_results_tex(project_root: pathlib.Path, runs_meta: list):
         lines.append(r"\\end{table}")
     (docs / "07-resultados.tex").write_text("\\n".join(lines), encoding="utf-8")
 
-def prepare_scheduler(name: str, aging_step: int, tiebreaker: list[str]):
-    """Instancia e configura o escalonador apropriado."""
-    if name == "PRIOP":
+def prepare_scheduler(name: str, aging_step: int, tiebreaker: list[str], config_alpha: int = 0):
+    """
+    Instancia e configura o escalonador apropriado.
+
+    Args:
+        name: Nome do algoritmo (FIFO, SRTF, PRIOP, PRIOPENV)
+        aging_step: Valor do aging da linha de comando
+        tiebreaker: Ordem de critérios para desempate
+        config_alpha: Valor alpha do arquivo de configuração (para PRIOPENV)
+    
+    Returns:
+        Instância configurada do escalonador
+    """
+    name_upper = name.upper()
+    if name_upper == "PRIOPENV":
+        # PRIOPEnv usa alpha do arquivo de configuração
+        sched = PRIOP(aging_step=config_alpha)
+        print(f"[info] PRIOPEnv com alpha={config_alpha}")
+    elif name_upper == "PRIOP":
+        # PRIOP normal usa aging_step da linha de comando
         sched = PRIOP(aging_step=aging_step)
     else:
-        sched = ALGOS[name]()
+        sched = ALGOS[name_upper]()
+    
     if hasattr(sched, "set_tiebreaker"):
         sched.set_tiebreaker(tiebreaker)
+    
     return sched
 
 def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tiebreaker: list[str], aging_step: int):
     """Executa uma simulação completa e salva resultados."""
     cfg = load_config(cfg_path)
-    scheduler = prepare_scheduler(algo_name, aging_step, tiebreaker)
-    engine = SimulationEngine(build_tcbs(cfg), scheduler=scheduler, quantum=cfg.quantum, tiebreaker=tiebreaker)
+
+    # Se algoritmo não foi especificado na linha de comando, usar do arquivo
+    if not algo_name:
+        algo_name = cfg.algorithm
+    
+    # Preparar escalonador com alpha da configuração (se PRIOPEnv)
+    scheduler = prepare_scheduler(algo_name, aging_step, tiebreaker, cfg.alpha)
+
+    # Criar engine com quantum da configuração
+    engine = SimulationEngine(
+        build_tcbs(cfg), 
+        scheduler=scheduler, 
+        quantum=cfg.quantum, 
+        tiebreaker=tiebreaker)
+    
+    # Executar simulação completa
     engine.run_full()
+
+    # Salvar resultados
     outdir.mkdir(parents=True, exist_ok=True)
     svg = gantt_svg(engine.finished, events=engine.events, svg_scale=20)
-    # Exibe o gráfico gerado após a simulação
+    
+    # Exibir o gráfico gerado após a simulação
     final_svg = outdir / "gantt.svg"
     if final_svg.exists():
         final_png = outdir / "gantt_final.png"
@@ -268,8 +304,8 @@ def main(argv=None):
     runp.add_argument("--config", required=True)
     runp.add_argument(
         "--algo",
-        choices=["FIFO","SRTF","PRIOP"],
-        help="Sobrescreve o algoritmo definido no arquivo (FIFO, SRTF, PRIOP)."
+        choices=["FIFO","SRTF","PRIOP", "PRIOPENV"],
+        help="Sobrescreve o algoritmo definido no arquivo (FIFO, SRTF, PRIOP, PRIOPENV)."
     )
     runp.add_argument("--mode", choices=["step","full"], default="full")
     runp.add_argument("--outdir", default=".")
@@ -296,7 +332,7 @@ def main(argv=None):
         if args.mode == "step":
             cfg = load_config(cfg_path)
             algo_name = (args.algo or cfg.algorithm).upper()
-            sched = prepare_scheduler(algo_name, getattr(args, "aging_step", 0), tiebreaker)
+            sched = prepare_scheduler(algo_name, getattr(args, "aging_step", 0), tiebreaker, cfg.alpha)
             tcbs = build_tcbs(cfg)
             engine = SimulationEngine(tcbs, scheduler=sched, quantum=cfg.quantum, tiebreaker=tiebreaker)
 
@@ -419,22 +455,24 @@ def main(argv=None):
             return 0
 
         else:
-            cfg_tmp = load_config(cfg_path)
-            algo_name = (args.algo or cfg_tmp.algorithm).upper()
-            meta = run_single(cfg_path, base_out, algo_name, tiebreaker, getattr(args, "aging_step", 0))
-
             cfg = load_config(cfg_path)
-            cfg_algo = cfg.algorithm.upper()
-            chosen_algo = args.algo.upper() if getattr(args, "algo", None) else cfg_algo
-            if getattr(args, "algo", None) and chosen_algo != cfg_algo:
-                print(f"[info] --algo={chosen_algo} sobrescreve o algoritmo do arquivo ({cfg_algo}).")
-
+            
+             # Determina qual algoritmo usar
+            if args.algo:
+                chosen_algo = args.algo.upper()
+                print(f"[info] --algo={chosen_algo} sobrescreve o algoritmo do arquivo ({cfg.algorithm.upper()}).")
+            else:
+                chosen_algo = cfg.algorithm.upper()
+            
+            # Executa a simulação
             meta = run_single(cfg_path, base_out, chosen_algo, tiebreaker, getattr(args, "aging_step", 0))
 
+            #Relatório LaTeX
             if getattr(args, "report-latex", False):
                 project_root = pathlib.Path(__file__).resolve().parents[1]
                 write_results_tex(project_root, [meta])
 
+            # Mostrar resumo final
             summary = json.loads((base_out / "summary.json").read_text(encoding="utf-8"))
             from pprint import pprint; pprint(summary)
 

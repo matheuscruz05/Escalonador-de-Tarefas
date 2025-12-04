@@ -27,7 +27,8 @@ class PRIOP(Scheduler):
     def _effective_priority(self, t: TCB) -> int:
         if self.aging_step > 0:
             # usa somente o tempo de espera desde que entrou na ready
-            return t.priority + ( (getattr(t, "aging_wait", 0)) // self.aging_step )
+            effective = t.priority + ( t.aging_wait // self.aging_step )
+            return effective
         return t.priority
     
     def _tie_key_effective(self, t: TCB):
