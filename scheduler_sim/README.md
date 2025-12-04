@@ -221,6 +221,33 @@ Instale **apenas** na máquina de desenvolvimento:
 pip install pyinstaller
 ```
 
+## criação do executavel
+
+## excluir o build antigo e o dist
+
+rm -rf build dist \*.spec
+
+## gera o exe sem passar as libs
+
+pyinstaller -F -n scheduler-sim \
+ --add-data "scheduler_sim/data:scheduler_sim/data" \
+ scheduler_sim/cli.py
+
+ou
+
+## gera o exe passando as libs
+
+pyinstaller -F -n scheduler-sim \
+ --add-data "scheduler_sim/data:scheduler_sim/data" \
+ --hidden-import=tkinter \
+ --hidden-import=PIL \
+ --hidden-import=multiprocessing \
+ scheduler_sim/cli.py
+
+## Executar o exe
+
+./dist/scheduler-sim run --config scheduler_sim/data/mazziero_tabela6_1.txt --mode full --outdir out
+
 Gerar binário único (Linux/macOS):
 
 ```bash

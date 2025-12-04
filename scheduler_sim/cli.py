@@ -1,12 +1,21 @@
 import argparse, sys, pathlib, json, csv
 from typing import List
-from .scheduler.core import TCB, SimulationEngine
-from .scheduler.algorithms.fifo import FIFO
-from .scheduler.algorithms.srtf import SRTF
-from .scheduler.algorithms.priop import PRIOP
-from .scheduler.io.config_parser import parse_config_text
-from .scheduler.viz.ascii import gantt_ascii
-from .scheduler.viz.svg import gantt_svg
+# from .scheduler.core import TCB, SimulationEngine
+# from .scheduler.algorithms.fifo import FIFO
+# from .scheduler.algorithms.srtf import SRTF
+# from .scheduler.algorithms.priop import PRIOP
+# from .scheduler.io.config_parser import parse_config_text
+# from .scheduler.viz.ascii import gantt_ascii
+# from .scheduler.viz.svg import gantt_svg
+
+from scheduler_sim.scheduler.core import TCB, SimulationEngine
+from scheduler_sim.scheduler.algorithms.fifo import FIFO
+from scheduler_sim.scheduler.algorithms.srtf import SRTF
+from scheduler_sim.scheduler.algorithms.priop import PRIOP
+from scheduler_sim.scheduler.io.config_parser import parse_config_text
+from scheduler_sim.scheduler.viz.ascii import gantt_ascii
+from scheduler_sim.scheduler.viz.svg import gantt_svg
+
 
 from threading import Thread, Event
 from tkinter import Canvas  
@@ -14,9 +23,16 @@ from PIL import Image, ImageTk
 import cairosvg
 import subprocess  
 import threading   
-import multiprocessing as mp
+#import multiprocessing as mp
 import os, time
 import tkinter as tk
+
+# Forçar o método de inicialização 'spawn' para evitar problemas no PyInstaller
+# try:
+#     if mp.get_start_method(allow_none=True) != "spawn":
+#         mp.set_start_method("spawn", force=True)
+# except RuntimeError:
+#     pass
 
 
 ALGOS = {
@@ -119,21 +135,33 @@ def _viewer_main(png_path: str, title: str, refresh_ms: int = 120):
         pass
 
 
-def spawn_viewer(png_path: str, title: str = "Gráfico Gantt - Live", refresh_ms: int = 120) -> mp.Process:
-    """Sobe o viewer em outro processo (daemon)."""
-    proc = mp.Process(target=_viewer_main, args=(png_path, title, refresh_ms), daemon=True)
-    proc.start()
-    return proc
+# def spawn_viewer(png_path: str, title: str = "Gráfico Gantt - Live", refresh_ms: int = 120, daemon: bool = True) -> mp.Process:
+#     """Sobe o viewer em outro processo (daemon)."""
+#     proc = mp.Process(target=_viewer_main, args=(png_path, title, refresh_ms), daemon=True)
+#     proc.start()
+#     return proc
+
+def spawn_viewer(png_path: str, title: str = "Gráfico Gantt - Live", refresh_ms: int = 120, daemon: bool = True) -> threading.Thread:
+    thread = threading.Thread(target=_viewer_main, args=(png_path, title, refresh_ms))
+    thread.daemon = True  # Tornar o thread daemonic
+    thread.start()
+    return thread
 
 
-def stop_viewer(proc: mp.Process | None) -> None:
-    """Encerra o viewer com segurança (se ainda estiver vivo)."""
-    if proc is not None and proc.is_alive():
-        proc.terminate()
-        try:
-            proc.join(timeout=1.5)
-        except Exception:
-            pass
+# def stop_viewer(thread: threading.Thread | None) -> None:
+#     """Encerra o viewer com segurança (se ainda estiver vivo)."""
+#     if proc is not None and proc.is_alive():
+#         proc.terminate()
+#         try:
+#             proc.join(timeout=1.5)
+#         except Exception:
+#             pass
+
+# Função para parar o visualizador gráfico
+def stop_viewer(thread: threading.Thread | None) -> None:
+    """Encerra o viewer com segurança (se o thread ainda estiver vivo)."""
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=1.5)
 
 
 # ------------------ utilitários do simulador ------------------
@@ -203,17 +231,6 @@ def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tie
     engine.run_full()
     outdir.mkdir(parents=True, exist_ok=True)
     svg = gantt_svg(engine.finished, events=engine.events, svg_scale=20)
-    # Exibe o gráfico gerado após a simulação
-    final_svg = outdir / "gantt.svg"
-    if final_svg.exists():
-        final_png = outdir / "gantt_final.png"
-        cairosvg.svg2png(
-            url=str(final_svg),
-            write_to=str(final_png),
-            output_width=1600,
-            output_height=800,
-        )
-        _ = spawn_viewer(str(final_png), title="Gráfico Gantt - Resultado Final")
     (outdir / "gantt.svg").write_text(svg, encoding="utf-8")
     summary = engine.summary()
     write_summary(outdir, summary)
@@ -230,11 +247,11 @@ def run_single(cfg_path: pathlib.Path, outdir: pathlib.Path, algo_name: str, tie
 
 def main(argv=None):
     # Evita herdar descritores/estado quando abrimos a janela (mais estável que 'fork')
-    try:
-        if mp.get_start_method(allow_none=True) != "spawn":
-            mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        pass
+    # try:
+    #     if mp.get_start_method(allow_none=True) != "spawn":
+    #         mp.set_start_method("spawn", force=True)
+    # except RuntimeError:
+    #     pass
 
     p = argparse.ArgumentParser(prog="scheduler-sim")
     sub = p.add_subparsers(dest="cmd")
@@ -361,18 +378,17 @@ def main(argv=None):
             return 0
 
         else:
-            cfg_tmp = load_config(cfg_path)
-            algo_name = (args.algo or cfg_tmp.algorithm).upper()
-            meta = run_single(cfg_path, base_out, algo_name, tiebreaker, getattr(args, "aging_step", 0))
+            # cfg_tmp = load_config(cfg_path)
+            # algo_name = (args.algo or cfg_tmp.algorithm).upper()
+            # meta = run_single(cfg_path, base_out, algo_name, tiebreaker, getattr(args, "aging_step", 0))
 
             cfg = load_config(cfg_path)
             cfg_algo = cfg.algorithm.upper()
-            chosen_algo = args.algo.upper() if getattr(args, "algo", None) else cfg_algo
+            chosen_algo = (args.algo or cfg_algo).upper()
             if getattr(args, "algo", None) and chosen_algo != cfg_algo:
                 print(f"[info] --algo={chosen_algo} sobrescreve o algoritmo do arquivo ({cfg_algo}).")
-
             meta = run_single(cfg_path, base_out, chosen_algo, tiebreaker, getattr(args, "aging_step", 0))
-
+            
             if getattr(args, "report-latex", False):
                 project_root = pathlib.Path(__file__).resolve().parents[1]
                 write_results_tex(project_root, [meta])
@@ -390,7 +406,14 @@ def main(argv=None):
                     output_width=1600,
                     output_height=800,
                 )
-                _ = spawn_viewer(str(final_png), title="Gráfico Gantt - Resultado Final")
+                #_ = spawn_viewer(str(final_png), title="Gráfico Gantt - Resultado Final")
+                viewer_proc = spawn_viewer(str(final_png), title="Gráfico Gantt - Resultado Final", daemon=False)
+                print("[info] Janela do gráfico aberta. Pressione CTRL + C para fechar.", flush=True)
+                # Bloqueia aqui até o usuário fechar a janela (processo do viewer terminar)
+                try:
+                    viewer_proc.join()
+                except KeyboardInterrupt:
+                    pass
 
             return 0
 
